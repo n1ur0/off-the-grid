@@ -1,0 +1,19 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Off the Grid Database",
+      "Group": "Development",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "off_the_grid",
+      "Username": "postgres",
+      "PassFile": "/tmp/pgpassfile",
+      "SSLMode": "prefer",
+      "SSLCompression": 0,
+      "Timeout": 10,
+      "UseSSHTunnel": 0,
+      "TunnelPort": "22",
+      "TunnelAuthentication": 0
+    }
+  }
+}

@@ -1,0 +1,222 @@
+# AlertManager configuration for Off the Grid platform
+global:
+  # Global configuration
+  smtp_smarthost: 'localhost:587'
+  smtp_from: 'alerts@offthegrid.local'
+  smtp_auth_username: 'alerts@offthegrid.local'
+  smtp_auth_password: 'your-smtp-password'
+  smtp_require_tls: true
+
+# Routing configuration
+route:
+  # Default receiver
+  receiver: 'default'
+  group_by: ['alertname', 'cluster', 'service']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 12h
+  
+  # Sub-routes for different alert types
+  routes:
+    # Critical alerts - immediate notification
+    - match:
+        severity: critical
+      receiver: 'critical-alerts'
+      group_wait: 10s
+      group_interval: 5m
+      repeat_interval: 30m
+
+    # Security alerts - immediate notification
+    - match:
+        component: security
+      receiver: 'security-team'
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 15m
+
+    # Database alerts
+    - match:
+        component: database
+      receiver: 'database-team'
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 1h
+
+    # Business logic alerts
+    - match:
+        component: business
+      receiver: 'dev-team'
+      group_wait: 30s
+      group_interval: 10m
+      repeat_interval: 2h
+
+    # System alerts
+    - match:
+        component: system
+      receiver: 'ops-team'
+      group_wait: 1m
+      group_interval: 5m
+      repeat_interval: 1h
+
+# Inhibition rules
+inhibit_rules:
+  # Inhibit warning alerts if critical alerts are firing
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'instance']
+
+  # Inhibit endpoint alerts if the node is down
+  - source_match:
+      alertname: 'NodeDown'
+    target_match_re:
+      alertname: '.*Down'
+    equal: ['instance']
+
+# Notification receivers
+receivers:
+  # Default receiver
+  - name: 'default'
+    email_configs:
+      - to: 'admin@offthegrid.local'
+        subject: '[Off the Grid] Alert: {{ .GroupLabels.alertname }}'
+        body: |
+          {{ range .Alerts }}
+          **Alert:** {{ .Annotations.summary }}
+          **Description:** {{ .Annotations.description }}
+          **Severity:** {{ .Labels.severity }}
+          **Component:** {{ .Labels.component }}
+          **Instance:** {{ .Labels.instance }}
+          **Status:** {{ .Status }}
+          **Started:** {{ .StartsAt }}
+          {{ end }}
+
+  # Critical alerts - multiple channels
+  - name: 'critical-alerts'
+    email_configs:
+      - to: 'critical@offthegrid.local'
+        subject: '[CRITICAL] Off the Grid Alert: {{ .GroupLabels.alertname }}'
+        body: |
+          🚨 **CRITICAL ALERT** 🚨
+          
+          {{ range .Alerts }}
+          **Alert:** {{ .Annotations.summary }}
+          **Description:** {{ .Annotations.description }}
+          **Component:** {{ .Labels.component }}
+          **Instance:** {{ .Labels.instance }}
+          **Started:** {{ .StartsAt }}
+          {{ end }}
+        
+    slack_configs:
+      - api_url: 'YOUR_SLACK_WEBHOOK_URL'
+        channel: '#alerts-critical'
+        title: 'Critical Alert: {{ .GroupLabels.alertname }}'
+        text: |
+          🚨 **CRITICAL ALERT** 🚨
+          {{ range .Alerts }}
+          *{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          Component: {{ .Labels.component }}
+          Instance: {{ .Labels.instance }}
+          {{ end }}
+        color: 'danger'
+
+  # Security alerts
+  - name: 'security-team'
+    email_configs:
+      - to: 'security@offthegrid.local'
+        subject: '[SECURITY] Off the Grid Alert: {{ .GroupLabels.alertname }}'
+        body: |
+          🔒 **SECURITY ALERT** 🔒
+          
+          {{ range .Alerts }}
+          **Alert:** {{ .Annotations.summary }}
+          **Description:** {{ .Annotations.description }}
+          **Instance:** {{ .Labels.instance }}
+          **Started:** {{ .StartsAt }}
+          {{ end }}
+
+    slack_configs:
+      - api_url: 'YOUR_SLACK_WEBHOOK_URL'
+        channel: '#security-alerts'
+        title: 'Security Alert: {{ .GroupLabels.alertname }}'
+        text: |
+          🔒 **SECURITY ALERT** 🔒
+          {{ range .Alerts }}
+          *{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          Instance: {{ .Labels.instance }}
+          {{ end }}
+        color: 'warning'
+
+  # Database team
+  - name: 'database-team'
+    email_configs:
+      - to: 'dba@offthegrid.local'
+        subject: '[DATABASE] Off the Grid Alert: {{ .GroupLabels.alertname }}'
+        body: |
+          💾 **DATABASE ALERT** 💾
+          
+          {{ range .Alerts }}
+          **Alert:** {{ .Annotations.summary }}
+          **Description:** {{ .Annotations.description }}
+          **Instance:** {{ .Labels.instance }}
+          **Started:** {{ .StartsAt }}
+          {{ end }}
+
+  # Development team
+  - name: 'dev-team'
+    email_configs:
+      - to: 'dev@offthegrid.local'
+        subject: '[DEVELOPMENT] Off the Grid Alert: {{ .GroupLabels.alertname }}'
+        body: |
+          💻 **DEVELOPMENT ALERT** 💻
+          
+          {{ range .Alerts }}
+          **Alert:** {{ .Annotations.summary }}
+          **Description:** {{ .Annotations.description }}
+          **Component:** {{ .Labels.component }}
+          **Instance:** {{ .Labels.instance }}
+          **Started:** {{ .StartsAt }}
+          {{ end }}
+
+    slack_configs:
+      - api_url: 'YOUR_SLACK_WEBHOOK_URL'
+        channel: '#development'
+        title: 'Dev Alert: {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *{{ .Annotations.summary }}*
+          {{ .Annotations.description }}
+          Component: {{ .Labels.component }}
+          {{ end }}
+
+  # Operations team
+  - name: 'ops-team'
+    email_configs:
+      - to: 'ops@offthegrid.local'
+        subject: '[OPERATIONS] Off the Grid Alert: {{ .GroupLabels.alertname }}'
+        body: |
+          ⚙️ **OPERATIONS ALERT** ⚙️
+          
+          {{ range .Alerts }}
+          **Alert:** {{ .Annotations.summary }}
+          **Description:** {{ .Annotations.description }}
+          **Instance:** {{ .Labels.instance }}
+          **Started:** {{ .StartsAt }}
+          {{ end }}
+
+  # PagerDuty integration for critical alerts
+  - name: 'pagerduty-critical'
+    pagerduty_configs:
+      - routing_key: 'YOUR_PAGERDUTY_INTEGRATION_KEY'
+        description: '{{ .GroupLabels.alertname }}: {{ .GroupLabels.instance }}'
+        details:
+          summary: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+          component: '{{ .GroupLabels.component }}'
+          severity: '{{ .GroupLabels.severity }}'
+
+# Templates for custom formatting
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'

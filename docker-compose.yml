@@ -1,0 +1,192 @@
+# Docker Compose configuration for Off the Grid trading platform development environment
+# Provides PostgreSQL database, Redis cache, and pgAdmin for database management
+
+services:
+  # PostgreSQL database for user progress tracking
+  postgres:
+    image: postgres:14-alpine
+    container_name: off_the_grid_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: off_the_grid
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./database/seed_data.sql:/docker-entrypoint-initdb.d/02_seed_data.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - off_the_grid_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d off_the_grid"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Redis for session management and caching
+  redis:
+    image: redis:7-alpine
+    container_name: off_the_grid_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass redis_password
+    environment:
+      REDIS_PASSWORD: redis_password
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - off_the_grid_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+  # pgAdmin for database administration (optional)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: off_the_grid_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@offthegrid.local
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_LISTEN_PORT: 80
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./database/pgadmin_servers.json:/pgadmin4/servers.json:ro
+    ports:
+      - "8080:80"
+    networks:
+      - off_the_grid_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Redis Commander for Redis administration (optional)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: off_the_grid_redis_commander
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:redis_password
+      HTTP_USER: admin
+      HTTP_PASSWORD: admin123
+    ports:
+      - "8081:8081"
+    networks:
+      - off_the_grid_network
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Database backup service (runs daily)
+  db_backup:
+    image: postgres:14-alpine
+    container_name: off_the_grid_backup
+    restart: "no"
+    environment:
+      PGPASSWORD: postgres
+    volumes:
+      - ./backups:/backups
+      - ./database/backup_script.sh:/backup_script.sh:ro
+    command: /bin/sh -c "chmod +x /backup_script.sh && /backup_script.sh"
+    networks:
+      - off_the_grid_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - backup
+
+  # Database monitoring with pg_stat_statements
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: off_the_grid_postgres_exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: "postgresql://postgres:postgres@postgres:5432/off_the_grid?sslmode=disable"
+      PG_EXPORTER_EXTEND_QUERY_PATH: "/etc/postgres_exporter/queries.yaml"
+    volumes:
+      - ./database/monitoring/postgres_queries.yaml:/etc/postgres_exporter/queries.yaml:ro
+    ports:
+      - "9187:9187"
+    networks:
+      - off_the_grid_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - monitoring
+
+  # Redis monitoring
+  redis_exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: off_the_grid_redis_exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: redis_password
+    ports:
+      - "9121:9121"
+    networks:
+      - off_the_grid_network
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - monitoring
+
+networks:
+  off_the_grid_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+# Usage Examples:
+#
+# Start core services (PostgreSQL + Redis):
+# docker-compose up -d postgres redis
+#
+# Start with admin interfaces:
+# docker-compose up -d postgres redis pgadmin redis-commander
+#
+# Start with monitoring:
+# docker-compose --profile monitoring up -d
+#
+# Run database backup:
+# docker-compose --profile backup up db_backup
+#
+# View logs:
+# docker-compose logs -f postgres
+# docker-compose logs -f redis
+#
+# Stop all services:
+# docker-compose down
+#
+# Stop and remove volumes (WARNING: This will delete all data):
+# docker-compose down -v
+#
+# Database connection strings for application:
+# PostgreSQL: postgresql://postgres:postgres@localhost:5432/off_the_grid
+# Redis: redis://:redis_password@localhost:6379/0
+#
+# Admin interfaces:
+# pgAdmin: http://localhost:8080 (admin@offthegrid.local / admin123)
+# Redis Commander: http://localhost:8081 (admin / admin123)

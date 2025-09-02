@@ -1,0 +1,219 @@
+# PostgreSQL monitoring queries for Prometheus/Grafana
+# Custom metrics for Off the Grid trading platform
+
+# User activity metrics
+pg_user_activity:
+  query: |
+    SELECT 
+      COUNT(*) as total_users,
+      COUNT(CASE WHEN last_login_at > NOW() - INTERVAL '24 hours' THEN 1 END) as active_users_24h,
+      COUNT(CASE WHEN last_login_at > NOW() - INTERVAL '7 days' THEN 1 END) as active_users_7d,
+      COUNT(CASE WHEN created_at > NOW() - INTERVAL '24 hours' THEN 1 END) as new_users_24h
+    FROM users 
+    WHERE is_active = true;
+  metrics:
+    - total_users:
+        usage: "GAUGE"
+        description: "Total number of active users"
+    - active_users_24h:
+        usage: "GAUGE"
+        description: "Number of users active in last 24 hours"
+    - active_users_7d:
+        usage: "GAUGE"
+        description: "Number of users active in last 7 days"
+    - new_users_24h:
+        usage: "GAUGE"
+        description: "Number of new users in last 24 hours"
+
+# Educational progress metrics
+pg_education_progress:
+  query: |
+    SELECT 
+      em.difficulty_level,
+      COUNT(*) as total_enrollments,
+      COUNT(CASE WHEN ep.completion_status = 'completed' THEN 1 END) as completions,
+      ROUND(AVG(CASE WHEN ep.completion_status = 'completed' THEN ep.best_score END), 2) as avg_score
+    FROM educational_progress ep
+    JOIN educational_modules em ON ep.module_id = em.id
+    WHERE ep.first_started_at > NOW() - INTERVAL '30 days'
+    GROUP BY em.difficulty_level;
+  metrics:
+    - total_enrollments:
+        usage: "GAUGE"
+        description: "Total module enrollments in last 30 days"
+        labels:
+          - difficulty_level
+    - completions:
+        usage: "GAUGE"
+        description: "Module completions in last 30 days"
+        labels:
+          - difficulty_level
+    - avg_score:
+        usage: "GAUGE"
+        description: "Average quiz score by difficulty level"
+        labels:
+          - difficulty_level
+
+# Practice trading metrics
+pg_practice_trading:
+  query: |
+    SELECT 
+      COUNT(*) as total_sessions,
+      COUNT(CASE WHEN completed = true THEN 1 END) as completed_sessions,
+      ROUND(AVG(CASE WHEN completed = true THEN total_pnl_percentage END), 2) as avg_pnl,
+      COUNT(CASE WHEN completed = true AND total_pnl_percentage > 0 THEN 1 END) as profitable_sessions
+    FROM practice_trades 
+    WHERE created_at > NOW() - INTERVAL '30 days';
+  metrics:
+    - total_sessions:
+        usage: "GAUGE"
+        description: "Total practice trading sessions in last 30 days"
+    - completed_sessions:
+        usage: "GAUGE"
+        description: "Completed practice sessions in last 30 days"
+    - avg_pnl:
+        usage: "GAUGE"
+        description: "Average P&L percentage in practice sessions"
+    - profitable_sessions:
+        usage: "GAUGE"
+        description: "Number of profitable practice sessions"
+
+# Database performance metrics
+pg_table_stats:
+  query: |
+    SELECT 
+      schemaname,
+      tablename,
+      n_tup_ins as inserts,
+      n_tup_upd as updates,
+      n_tup_del as deletes,
+      n_live_tup as live_tuples,
+      n_dead_tup as dead_tuples
+    FROM pg_stat_user_tables 
+    WHERE tablename IN ('users', 'educational_progress', 'practice_trades', 'user_sessions', 'user_activities');
+  metrics:
+    - inserts:
+        usage: "COUNTER"
+        description: "Number of tuples inserted"
+        labels:
+          - schemaname
+          - tablename
+    - updates:
+        usage: "COUNTER"
+        description: "Number of tuples updated"
+        labels:
+          - schemaname
+          - tablename
+    - deletes:
+        usage: "COUNTER"
+        description: "Number of tuples deleted"
+        labels:
+          - schemaname
+          - tablename
+    - live_tuples:
+        usage: "GAUGE"
+        description: "Number of live tuples"
+        labels:
+          - schemaname
+          - tablename
+    - dead_tuples:
+        usage: "GAUGE"
+        description: "Number of dead tuples"
+        labels:
+          - schemaname
+          - tablename
+
+# Connection and session metrics
+pg_connections:
+  query: |
+    SELECT 
+      COUNT(*) as total_connections,
+      COUNT(CASE WHEN state = 'active' THEN 1 END) as active_connections,
+      COUNT(CASE WHEN state = 'idle' THEN 1 END) as idle_connections
+    FROM pg_stat_activity 
+    WHERE datname = 'off_the_grid';
+  metrics:
+    - total_connections:
+        usage: "GAUGE"
+        description: "Total database connections"
+    - active_connections:
+        usage: "GAUGE"
+        description: "Active database connections"
+    - idle_connections:
+        usage: "GAUGE"
+        description: "Idle database connections"
+
+# Slow query monitoring
+pg_slow_queries:
+  query: |
+    SELECT 
+      query,
+      calls,
+      total_exec_time,
+      mean_exec_time,
+      rows
+    FROM pg_stat_statements 
+    WHERE query NOT LIKE '%pg_stat_statements%'
+    ORDER BY mean_exec_time DESC 
+    LIMIT 10;
+  metrics:
+    - calls:
+        usage: "COUNTER"
+        description: "Number of times the statement was executed"
+        labels:
+          - query
+    - total_exec_time:
+        usage: "COUNTER"
+        description: "Total time spent executing the statement"
+        labels:
+          - query
+    - mean_exec_time:
+        usage: "GAUGE"
+        description: "Mean execution time for the statement"
+        labels:
+          - query
+    - rows:
+        usage: "COUNTER"
+        description: "Total number of rows retrieved or affected"
+        labels:
+          - query
+
+# Achievement metrics
+pg_achievements:
+  query: |
+    SELECT 
+      a.achievement_type,
+      COUNT(*) as total_earned
+    FROM user_achievements ua
+    JOIN achievements a ON ua.achievement_id = a.id
+    WHERE ua.earned_at > NOW() - INTERVAL '30 days'
+    GROUP BY a.achievement_type;
+  metrics:
+    - total_earned:
+        usage: "GAUGE"
+        description: "Total achievements earned in last 30 days"
+        labels:
+          - achievement_type
+
+# User session metrics
+pg_user_sessions:
+  query: |
+    SELECT 
+      COUNT(*) as total_sessions,
+      COUNT(CASE WHEN is_active = true THEN 1 END) as active_sessions,
+      COUNT(CASE WHEN expires_at > NOW() THEN 1 END) as valid_sessions,
+      COUNT(CASE WHEN created_at > NOW() - INTERVAL '24 hours' THEN 1 END) as new_sessions_24h
+    FROM user_sessions;
+  metrics:
+    - total_sessions:
+        usage: "GAUGE"
+        description: "Total user sessions"
+    - active_sessions:
+        usage: "GAUGE"
+        description: "Active user sessions"
+    - valid_sessions:
+        usage: "GAUGE"
+        description: "Valid (non-expired) user sessions"
+    - new_sessions_24h:
+        usage: "GAUGE"
+        description: "New sessions created in last 24 hours"

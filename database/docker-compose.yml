@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: offthegrid-postgres
+    environment:
+      POSTGRES_DB: offthegrid
+      POSTGRES_USER: offthegrid
+      POSTGRES_PASSWORD: changeme-in-production
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schemas/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks:
+      - offthegrid-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U offthegrid -d offthegrid"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: offthegrid-redis
+    command: redis-server /usr/local/etc/redis/redis.conf
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis_logs:/var/log/redis
+    networks:
+      - offthegrid-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --raw incr ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis Commander for development (optional)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: offthegrid-redis-commander
+    environment:
+      - REDIS_HOSTS=local:offthegrid-redis:6379:0:changeme-in-production
+    ports:
+      - "8081:8081"
+    networks:
+      - offthegrid-network
+    depends_on:
+      - redis
+    profiles:
+      - development
+
+  # pgAdmin for development (optional)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: offthegrid-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@offthegrid.local
+      PGADMIN_DEFAULT_PASSWORD: changeme-in-production
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "8080:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - offthegrid-network
+    depends_on:
+      - postgres
+    profiles:
+      - development
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  redis_logs:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  offthegrid-network:
+    driver: bridge

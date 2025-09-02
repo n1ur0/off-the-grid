@@ -1,0 +1,847 @@
+# Kubernetes production deployment configuration for Off the Grid platform
+# Provides high availability, auto-scaling, and production-grade configurations
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: off-the-grid-prod
+  labels:
+    name: off-the-grid-prod
+    environment: production
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: off-the-grid-config
+  namespace: off-the-grid-prod
+data:
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+  API_BASE_URL: "https://api.offthegrid.io"
+  FRONTEND_URL: "https://offthegrid.io"
+  ALLOWED_ORIGINS: "https://offthegrid.io,https://www.offthegrid.io"
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_NAME: "off_the_grid"
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
+  CACHE_DEFAULT_TTL: "3600"
+  PROMETHEUS_METRICS_ENABLED: "true"
+
+---
+# Secret for sensitive configuration
+apiVersion: v1
+kind: Secret
+metadata:
+  name: off-the-grid-secrets
+  namespace: off-the-grid-prod
+type: Opaque
+stringData:
+  DB_PASSWORD: "change-me-in-production"
+  REDIS_PASSWORD: "change-me-in-production"
+  JWT_SECRET_KEY: "change-me-in-production"
+  ENCRYPTION_KEY: "change-me-in-production"
+  SESSION_SECRET_KEY: "change-me-in-production"
+
+---
+# PostgreSQL StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: off-the-grid-prod
+  labels:
+    app: postgres
+    component: database
+spec:
+  serviceName: postgres-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        component: database
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:14-alpine
+        env:
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: off-the-grid-config
+              key: DB_NAME
+        - name: POSTGRES_USER
+          value: "off_the_grid_user"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: off-the-grid-secrets
+              key: DB_PASSWORD
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        ports:
+        - containerPort: 5432
+          name: postgres
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: postgres-config
+          mountPath: /etc/postgresql/postgresql.conf
+          subPath: postgresql.conf
+        resources:
+          requests:
+            cpu: 1000m
+            memory: 2Gi
+          limits:
+            cpu: 4000m
+            memory: 8Gi
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - off_the_grid_user
+            - -d
+            - off_the_grid
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - off_the_grid_user
+            - -d
+            - off_the_grid
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 5
+      volumes:
+      - name: postgres-config
+        configMap:
+          name: postgres-config
+      securityContext:
+        fsGroup: 999
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-storage
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: "gp3"
+      resources:
+        requests:
+          storage: 100Gi
+
+---
+# PostgreSQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: off-the-grid-prod
+  labels:
+    app: postgres
+    component: database
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+    name: postgres
+  type: ClusterIP
+
+---
+# PostgreSQL Headless Service for StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-headless
+  namespace: off-the-grid-prod
+  labels:
+    app: postgres
+    component: database
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+    name: postgres
+  clusterIP: None
+
+---
+# Redis StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: off-the-grid-prod
+  labels:
+    app: redis
+    component: cache
+spec:
+  serviceName: redis-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+        component: cache
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        command: 
+        - redis-server
+        - --appendonly
+        - "yes"
+        - --requirepass
+        - $(REDIS_PASSWORD)
+        - --maxmemory
+        - "2gb"
+        - --maxmemory-policy
+        - "allkeys-lru"
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: off-the-grid-secrets
+              key: REDIS_PASSWORD
+        ports:
+        - containerPort: 6379
+          name: redis
+        volumeMounts:
+        - name: redis-storage
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-storage
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: "gp3"
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: off-the-grid-prod
+  labels:
+    app: redis
+    component: cache
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+    name: redis
+  type: ClusterIP
+
+---
+# Redis Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-headless
+  namespace: off-the-grid-prod
+  labels:
+    app: redis
+    component: cache
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+    name: redis
+  clusterIP: None
+
+---
+# API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: off-the-grid-prod
+  labels:
+    app: api
+    component: backend
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+        component: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: api
+        image: ghcr.io/off-the-grid/api:latest
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: off-the-grid-config
+              key: DB_HOST
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: off-the-grid-secrets
+              key: DB_PASSWORD
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: off-the-grid-config
+              key: REDIS_HOST
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: off-the-grid-secrets
+              key: REDIS_PASSWORD
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: off-the-grid-secrets
+              key: JWT_SECRET_KEY
+        envFrom:
+        - configMapRef:
+            name: off-the-grid-config
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: api-logs
+          mountPath: /var/log/off-the-grid
+      volumes:
+      - name: api-logs
+        emptyDir: {}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+---
+# API Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: off-the-grid-prod
+  labels:
+    app: api
+    component: backend
+spec:
+  selector:
+    app: api
+  ports:
+  - port: 80
+    targetPort: 8000
+    name: http
+  type: ClusterIP
+
+---
+# API Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-hpa
+  namespace: off-the-grid-prod
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+# Frontend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: off-the-grid-prod
+  labels:
+    app: frontend
+    component: frontend
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        component: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: ghcr.io/off-the-grid/frontend:latest
+        ports:
+        - containerPort: 3000
+          name: http
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: NEXT_PUBLIC_API_URL
+          valueFrom:
+            configMapKeyRef:
+              name: off-the-grid-config
+              key: API_BASE_URL
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+---
+# Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: off-the-grid-prod
+  labels:
+    app: frontend
+    component: frontend
+spec:
+  selector:
+    app: frontend
+  ports:
+  - port: 80
+    targetPort: 3000
+    name: http
+  type: ClusterIP
+
+---
+# Frontend Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend-hpa
+  namespace: off-the-grid-prod
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+# CLI Bot Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cli-bot
+  namespace: off-the-grid-prod
+  labels:
+    app: cli-bot
+    component: bot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cli-bot
+  template:
+    metadata:
+      labels:
+        app: cli-bot
+        component: bot
+    spec:
+      containers:
+      - name: cli-bot
+        image: ghcr.io/off-the-grid/cli:latest
+        env:
+        - name: RUST_LOG
+          value: "info"
+        - name: CONTAINER_ROLE
+          value: "matcher_bot"
+        envFrom:
+        - configMapRef:
+            name: off-the-grid-config
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        volumeMounts:
+        - name: cli-config
+          mountPath: /app/config
+        - name: cli-data
+          mountPath: /app/data
+      volumes:
+      - name: cli-config
+        configMap:
+          name: cli-config
+      - name: cli-data
+        persistentVolumeClaim:
+          claimName: cli-data-pvc
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+---
+# CLI Data PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cli-data-pvc
+  namespace: off-the-grid-prod
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# Nginx Ingress Controller Configuration
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: off-the-grid-ingress
+  namespace: off-the-grid-prod
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header X-Frame-Options "DENY" always;
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+spec:
+  tls:
+  - hosts:
+    - offthegrid.io
+    - www.offthegrid.io
+    - api.offthegrid.io
+    secretName: off-the-grid-tls
+  rules:
+  - host: offthegrid.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend-service
+            port:
+              number: 80
+  - host: www.offthegrid.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend-service
+            port:
+              number: 80
+  - host: api.offthegrid.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service
+            port:
+              number: 80
+
+---
+# Network Policies
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-network-policy
+  namespace: off-the-grid-prod
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: api
+    - podSelector:
+        matchLabels:
+          app: cli-bot
+    ports:
+    - protocol: TCP
+      port: 5432
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-network-policy
+  namespace: off-the-grid-prod
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: api
+    ports:
+    - protocol: TCP
+      port: 6379
+
+---
+# Pod Disruption Budgets
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-pdb
+  namespace: off-the-grid-prod
+spec:
+  selector:
+    matchLabels:
+      app: api
+  maxUnavailable: 1
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend-pdb
+  namespace: off-the-grid-prod
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  maxUnavailable: 1
+
+---
+# Service Monitor for Prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: off-the-grid-api-metrics
+  namespace: off-the-grid-prod
+  labels:
+    app: api
+spec:
+  selector:
+    matchLabels:
+      app: api
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+
+---
+# Prometheus Rule for Alerting
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: off-the-grid-alerts
+  namespace: off-the-grid-prod
+spec:
+  groups:
+  - name: off-the-grid
+    rules:
+    - alert: HighErrorRate
+      expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.1
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: High error rate detected
+        description: "Error rate is {{ $value }} errors per second"
+    
+    - alert: HighResponseTime
+      expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: High response time detected
+        description: "95th percentile response time is {{ $value }}s"
+    
+    - alert: PodCrashLooping
+      expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: Pod is crash looping
+        description: "Pod {{ $labels.pod }} is crash looping"
+
+---
+# RBAC Configuration
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: off-the-grid-sa
+  namespace: off-the-grid-prod
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: off-the-grid-prod
+  name: off-the-grid-role
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: off-the-grid-rolebinding
+  namespace: off-the-grid-prod
+subjects:
+- kind: ServiceAccount
+  name: off-the-grid-sa
+  namespace: off-the-grid-prod
+roleRef:
+  kind: Role
+  name: off-the-grid-role
+  apiGroup: rbac.authorization.k8s.io
