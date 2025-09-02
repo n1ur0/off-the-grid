@@ -1,0 +1,268 @@
+# Prometheus alerting rules for Off the Grid platform
+groups:
+  - name: system_alerts
+    rules:
+      # High CPU usage
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is above 80% for more than 5 minutes on {{ $labels.instance }}"
+
+      # High memory usage
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 85% for more than 5 minutes on {{ $labels.instance }}"
+
+      # Low disk space
+      - alert: LowDiskSpace
+        expr: node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"} * 100 < 10
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Disk space is below 10% on filesystem {{ $labels.mountpoint }} on {{ $labels.instance }}"
+
+      # Node down
+      - alert: NodeDown
+        expr: up{job="node-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Node {{ $labels.instance }} is down"
+          description: "Node exporter on {{ $labels.instance }} has been down for more than 1 minute"
+
+  - name: database_alerts
+    rules:
+      # PostgreSQL down
+      - alert: PostgreSQLDown
+        expr: up{job="postgres-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL has been down for more than 1 minute"
+
+      # High database connections
+      - alert: HighDatabaseConnections
+        expr: pg_stat_database_numbackends / pg_settings_max_connections * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "High database connections"
+          description: "Database connections are above 80% of maximum ({{ $value }}%)"
+
+      # Database deadlocks
+      - alert: DatabaseDeadlocks
+        expr: increase(pg_stat_database_deadlocks[1h]) > 5
+        for: 1m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Database deadlocks detected"
+          description: "{{ $value }} deadlocks detected in the last hour"
+
+      # Redis down
+      - alert: RedisDown
+        expr: up{job="redis-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis is down"
+          description: "Redis has been down for more than 1 minute"
+
+      # High Redis memory usage
+      - alert: HighRedisMemoryUsage
+        expr: redis_memory_used_bytes / redis_config_maxmemory_bytes * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "High Redis memory usage"
+          description: "Redis memory usage is above 90% ({{ $value }}%)"
+
+  - name: application_alerts
+    rules:
+      # FastAPI down
+      - alert: FastAPIDown
+        expr: up{job="fastapi-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "FastAPI application is down"
+          description: "FastAPI application has been down for more than 1 minute"
+
+      # Next.js down
+      - alert: NextJSDown
+        expr: up{job="nextjs-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: frontend
+        annotations:
+          summary: "Next.js application is down"
+          description: "Next.js application has been down for more than 1 minute"
+
+      # High HTTP error rate
+      - alert: HighHTTPErrorRate
+        expr: (sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) * 100 > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High HTTP error rate"
+          description: "HTTP 5xx error rate is above 5% ({{ $value }}%)"
+
+      # High response time
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High response time"
+          description: "95th percentile response time is above 2 seconds ({{ $value }}s)"
+
+      # WebSocket connection issues
+      - alert: HighWebSocketDisconnections
+        expr: increase(websocket_disconnections_total[5m]) > 10
+        for: 1m
+        labels:
+          severity: warning
+          component: websocket
+        annotations:
+          summary: "High WebSocket disconnections"
+          description: "{{ $value }} WebSocket disconnections in the last 5 minutes"
+
+  - name: container_alerts
+    rules:
+      # Container down
+      - alert: ContainerDown
+        expr: absent(container_last_seen) or (time() - container_last_seen > 60)
+        for: 1m
+        labels:
+          severity: critical
+          component: container
+        annotations:
+          summary: "Container {{ $labels.name }} is down"
+          description: "Container {{ $labels.name }} has been down for more than 1 minute"
+
+      # High container CPU
+      - alert: HighContainerCPU
+        expr: rate(container_cpu_usage_seconds_total[5m]) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: container
+        annotations:
+          summary: "High CPU usage in container {{ $labels.name }}"
+          description: "Container {{ $labels.name }} CPU usage is above 80%"
+
+      # High container memory
+      - alert: HighContainerMemory
+        expr: container_memory_usage_bytes / container_spec_memory_limit_bytes * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          component: container
+        annotations:
+          summary: "High memory usage in container {{ $labels.name }}"
+          description: "Container {{ $labels.name }} memory usage is above 90%"
+
+  - name: endpoint_alerts
+    rules:
+      # Endpoint down
+      - alert: EndpointDown
+        expr: probe_success == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: endpoint
+        annotations:
+          summary: "Endpoint {{ $labels.instance }} is down"
+          description: "Endpoint {{ $labels.instance }} has been down for more than 1 minute"
+
+      # High endpoint response time
+      - alert: HighEndpointResponseTime
+        expr: probe_duration_seconds > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: endpoint
+        annotations:
+          summary: "High response time for {{ $labels.instance }}"
+          description: "Endpoint {{ $labels.instance }} response time is above 5 seconds"
+
+  - name: security_alerts
+    rules:
+      # Failed login attempts
+      - alert: HighFailedLogins
+        expr: increase(auth_failed_attempts_total[5m]) > 10
+        for: 1m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "High failed login attempts"
+          description: "{{ $value }} failed login attempts in the last 5 minutes"
+
+      # Rate limiting triggered
+      - alert: RateLimitingTriggered
+        expr: increase(rate_limit_exceeded_total[5m]) > 50
+        for: 1m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "Rate limiting frequently triggered"
+          description: "Rate limiting has been triggered {{ $value }} times in the last 5 minutes"
+
+  - name: business_alerts
+    rules:
+      # Grid order failures
+      - alert: HighGridOrderFailures
+        expr: increase(grid_order_failures_total[5m]) > 5
+        for: 1m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "High grid order failures"
+          description: "{{ $value }} grid order failures in the last 5 minutes"
+
+      # Matcher bot errors
+      - alert: MatcherBotErrors
+        expr: increase(matcher_bot_errors_total[5m]) > 3
+        for: 1m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "Matcher bot errors"
+          description: "{{ $value }} matcher bot errors in the last 5 minutes"

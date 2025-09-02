@@ -1,3 +1,76 @@
+# Rust
 /target
-.vscode
+Cargo.lock
+
+# Nix
 result
+.direnv
+.envrc
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.gz
+*.tar
+*.zip
+*.7z
+
+# Environment and config files
+.env
+.env.local
+node_config.json
+matcher_config.json
+scan_config.json
+
+# Claude Code
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Node.js/Frontend
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.next/
+.nuxt/
+.cache/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+pgdata/
+*.dump
+*.sql.backup
+*_dump.sql
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Backups and screenshots (project-specific)
+backups/
+screenshots/
+
+# Documentation (if generated)
+docs/generated/
+docs/api/generated/

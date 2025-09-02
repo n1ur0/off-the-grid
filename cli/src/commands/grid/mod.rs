@@ -70,6 +70,7 @@ pub struct GridCommand {
 pub async fn handle_grid_command(
     node_client: NodeClient,
     orders_command: GridCommand,
+    json_output: bool,
 ) -> CommandResult<()> {
     let scan_config = ScanConfig::try_create(orders_command.scan_config, None)?;
     let token_store = TokenStore::load(None);
@@ -93,10 +94,10 @@ pub async fn handle_grid_command(
             Ok(transaction_query_loop(&node_client, &token_store, data).await?)
         }
         Commands::List { token_id } => {
-            Ok(handle_grid_list(node_client, scan_config, token_id).await?)
+            Ok(handle_grid_list(node_client, scan_config, token_id, json_output).await?)
         }
         Commands::Details { grid_identity } => {
-            Ok(handle_grid_details(node_client, scan_config, grid_identity).await?)
+            Ok(handle_grid_details(node_client, scan_config, grid_identity, json_output).await?)
         }
     }
 }

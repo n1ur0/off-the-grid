@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+  
+  body {
+    @apply bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100;
+  }
+}
+
+@layer components {
+  /* Button variants */
+  .btn-primary {
+    @apply bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors;
+  }
+  
+  .btn-secondary {
+    @apply bg-gray-200 text-gray-900 px-4 py-2 rounded-lg hover:bg-gray-300 focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-colors;
+  }
+  
+  .btn-success {
+    @apply bg-success-600 text-white px-4 py-2 rounded-lg hover:bg-success-700 focus:ring-2 focus:ring-success-500 focus:ring-offset-2 transition-colors;
+  }
+  
+  .btn-danger {
+    @apply bg-danger-600 text-white px-4 py-2 rounded-lg hover:bg-danger-700 focus:ring-2 focus:ring-danger-500 focus:ring-offset-2 transition-colors;
+  }
+  
+  /* Input styles */
+  .input-primary {
+    @apply border-gray-300 rounded-lg focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-800;
+  }
+  
+  /* Card styles */
+  .card {
+    @apply bg-white rounded-lg shadow-sm border border-gray-200 dark:bg-gray-800 dark:border-gray-700;
+  }
+  
+  .card-header {
+    @apply px-6 py-4 border-b border-gray-200 dark:border-gray-700;
+  }
+  
+  .card-body {
+    @apply px-6 py-4;
+  }
+  
+  /* Trading specific styles */
+  .price-up {
+    @apply text-success-600 bg-success-50 dark:text-success-400 dark:bg-success-900/20;
+  }
+  
+  .price-down {
+    @apply text-danger-600 bg-danger-50 dark:text-danger-400 dark:bg-danger-900/20;
+  }
+  
+  .price-neutral {
+    @apply text-neutral bg-gray-50 dark:text-gray-400 dark:bg-gray-800;
+  }
+}
+
+@layer utilities {
+  .animate-fade-in {
+    animation: fadeIn 0.5s ease-in-out;
+  }
+  
+  .animate-slide-in {
+    animation: slideIn 0.3s ease-out;
+  }
+}

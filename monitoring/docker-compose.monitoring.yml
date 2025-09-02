@@ -1,0 +1,236 @@
+# Monitoring stack for Off the Grid platform
+# Provides Prometheus, Grafana, AlertManager, and related services
+version: '3.8'
+
+services:
+  # Prometheus - metrics collection and alerting
+  prometheus:
+    image: prom/prometheus:v2.48.1
+    container_name: off_the_grid_prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring_network
+      - off_the_grid_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Grafana - visualization and dashboards
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: off_the_grid_grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin123}
+      GF_USERS_ALLOW_SIGN_UP: false
+      GF_INSTALL_PLUGINS: grafana-piechart-panel,grafana-worldmap-panel,redis-datasource
+      GF_SECURITY_COOKIE_SECURE: true
+      GF_SECURITY_COOKIE_SAMESITE: strict
+      GF_LOG_LEVEL: info
+      GF_FEATURE_TOGGLES_ENABLE: publicDashboards
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/dashboard-configs:/var/lib/grafana/dashboards:ro
+    networks:
+      - monitoring_network
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # AlertManager - alert routing and notification
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: off_the_grid_alertmanager
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:9093'
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    networks:
+      - monitoring_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Node Exporter - system metrics
+  node_exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: off_the_grid_node_exporter
+    restart: unless-stopped
+    command:
+      - '--path.rootfs=/host'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "9100:9100"
+    volumes:
+      - '/:/host:ro,rslave'
+    networks:
+      - monitoring_network
+    pid: host
+
+  # cAdvisor - container metrics
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: off_the_grid_cadvisor
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /cgroup:/cgroup:ro
+    ports:
+      - "8082:8080"
+    networks:
+      - monitoring_network
+    command:
+      - '--housekeeping_interval=10s'
+      - '--docker_only=true'
+      - '--store_container_labels=false'
+
+  # Loki - log aggregation
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: off_the_grid_loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    networks:
+      - monitoring_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Promtail - log shipper
+  promtail:
+    image: grafana/promtail:2.9.4
+    container_name: off_the_grid_promtail
+    restart: unless-stopped
+    volumes:
+      - ./promtail/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    networks:
+      - monitoring_network
+    depends_on:
+      - loki
+    command: -config.file=/etc/promtail/config.yml
+
+  # Jaeger - distributed tracing
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: off_the_grid_jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: true
+      COLLECTOR_ZIPKIN_HOST_PORT: 9411
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14268:14268"  # Jaeger collector HTTP
+      - "14250:14250"  # Jaeger collector gRPC
+      - "6831:6831/udp" # Jaeger agent
+      - "6832:6832/udp" # Jaeger agent
+    networks:
+      - monitoring_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:14269/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # BlackBox Exporter - endpoint monitoring
+  blackbox_exporter:
+    image: prom/blackbox-exporter:v0.24.0
+    container_name: off_the_grid_blackbox_exporter
+    restart: unless-stopped
+    ports:
+      - "9115:9115"
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    networks:
+      - monitoring_network
+      - off_the_grid_network
+
+  # Uptime Kuma - additional uptime monitoring
+  uptime_kuma:
+    image: louislam/uptime-kuma:1
+    container_name: off_the_grid_uptime_kuma
+    restart: unless-stopped
+    ports:
+      - "3002:3001"
+    volumes:
+      - uptime_kuma_data:/app/data
+    networks:
+      - monitoring_network
+      - off_the_grid_network
+
+networks:
+  monitoring_network:
+    driver: bridge
+    name: off_the_grid_monitoring
+  off_the_grid_network:
+    external: true
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  alertmanager_data:
+    driver: local
+  loki_data:
+    driver: local
+  uptime_kuma_data:
+    driver: local
+
+# Usage:
+# docker-compose -f docker-compose.monitoring.yml up -d
+#
+# Access URLs:
+# Prometheus: http://localhost:9090
+# Grafana: http://localhost:3001 (admin/admin123)
+# AlertManager: http://localhost:9093
+# Jaeger: http://localhost:16686
+# Uptime Kuma: http://localhost:3002

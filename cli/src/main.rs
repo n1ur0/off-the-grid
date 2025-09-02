@@ -48,6 +48,9 @@ struct GridArgs {
     #[arg(long, help = "Ergo node API key", global(true))]
     api_key: Option<String>,
 
+    #[arg(long, help = "Output results in JSON format", global(true))]
+    json: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -82,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Scans(scan_command) => handle_scan_command(node, scan_command)
             .await
             .map_err(CommandError::from),
-        Commands::Grid(grid_command) => handle_grid_command(node, grid_command).await,
+        Commands::Grid(grid_command) => handle_grid_command(node, grid_command, args.json).await,
         Commands::Matcher(executor_command) => handle_matcher_command(node, executor_command)
             .await
             .map_err(CommandError::from),

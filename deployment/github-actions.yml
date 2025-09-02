@@ -1,0 +1,554 @@
+# GitHub Actions CI/CD Pipeline for Off the Grid Platform
+# Provides comprehensive testing, security scanning, and deployment automation
+
+name: Off the Grid CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ published ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  NODE_VERSION: '18'
+  PYTHON_VERSION: '3.11'
+  RUST_VERSION: '1.87.0'
+
+jobs:
+  # Code quality and security checks
+  code-quality:
+    name: Code Quality & Security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better analysis
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+          override: true
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            cli/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('cli/Cargo.lock') }}
+
+      # Python linting and security
+      - name: Install Python dependencies
+        working-directory: api
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Python linting with flake8
+        working-directory: api
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Python security scan with bandit
+        working-directory: api
+        run: bandit -r . -f json -o bandit-report.json || true
+
+      - name: Python dependency check with safety
+        working-directory: api
+        run: safety check --json --output safety-report.json || true
+
+      # JavaScript/TypeScript linting and security
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend linting
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Frontend type checking
+        working-directory: frontend
+        run: npm run type-check
+
+      - name: Frontend security audit
+        working-directory: frontend
+        run: npm audit --audit-level high || true
+
+      # Rust linting and security
+      - name: Rust formatting check
+        working-directory: cli
+        run: cargo fmt -- --check
+
+      - name: Rust linting with clippy
+        working-directory: cli
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Rust security audit
+        working-directory: cli
+        run: |
+          cargo install cargo-audit
+          cargo audit --json --output ../cargo-audit-report.json || true
+
+      # SAST scanning with CodeQL
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: javascript, python
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+
+      # Upload security reports
+      - name: Upload security reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            api/bandit-report.json
+            api/safety-report.json
+            cargo-audit-report.json
+          retention-days: 30
+
+  # Unit and integration tests
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: code-quality
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: off_the_grid_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          override: true
+
+      # Python tests
+      - name: Install Python dependencies
+        working-directory: api
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run Python tests
+        working-directory: api
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/off_the_grid_test
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          pytest tests/ --cov=. --cov-report=xml --cov-report=html --junitxml=pytest-report.xml
+
+      # Frontend tests
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend unit tests
+        working-directory: frontend
+        run: npm test -- --coverage --watchAll=false
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps
+
+      - name: Run E2E tests
+        working-directory: frontend
+        run: npm run test:e2e
+        env:
+          API_URL: http://localhost:8000
+
+      # Rust tests
+      - name: Run Rust tests
+        working-directory: cli
+        run: cargo test --verbose
+
+      # Upload test results
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: test-results
+          path: |
+            api/pytest-report.xml
+            api/htmlcov/
+            frontend/coverage/
+            frontend/playwright-report/
+          retention-days: 30
+
+      # Upload coverage to Codecov
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: api/coverage.xml,frontend/coverage/lcov.info
+          flags: unittests
+          name: codecov-umbrella
+
+  # Build and push Docker images
+  build:
+    name: Build Images
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      api-image: ${{ steps.api-meta.outputs.tags }}
+      frontend-image: ${{ steps.frontend-meta.outputs.tags }}
+      cli-image: ${{ steps.cli-meta.outputs.tags }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build API image
+      - name: Extract API metadata
+        id: api-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./api
+          push: true
+          tags: ${{ steps.api-meta.outputs.tags }}
+          labels: ${{ steps.api-meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Build Frontend image
+      - name: Extract Frontend metadata
+        id: frontend-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/frontend
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build and push Frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ steps.frontend-meta.outputs.tags }}
+          labels: ${{ steps.frontend-meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Build CLI image
+      - name: Extract CLI metadata
+        id: cli-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/cli
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build and push CLI image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./cli
+          push: true
+          tags: ${{ steps.cli-meta.outputs.tags }}
+          labels: ${{ steps.cli-meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Security scanning of Docker images
+  security-scan:
+    name: Security Scan Images
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Run Trivy vulnerability scanner on API image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build.outputs.api-image }}
+          format: 'sarif'
+          output: 'trivy-api-results.sarif'
+
+      - name: Run Trivy vulnerability scanner on Frontend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build.outputs.frontend-image }}
+          format: 'sarif'
+          output: 'trivy-frontend-results.sarif'
+
+      - name: Run Trivy vulnerability scanner on CLI image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build.outputs.cli-image }}
+          format: 'sarif'
+          output: 'trivy-cli-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: '.'
+
+  # Deploy to staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build, security-scan]
+    if: github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://staging.offthegrid.io
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      - name: Deploy to ECS Staging
+        run: |
+          # Update ECS service with new images
+          aws ecs update-service \
+            --cluster off-the-grid-staging \
+            --service api-service \
+            --force-new-deployment
+
+          aws ecs update-service \
+            --cluster off-the-grid-staging \
+            --service frontend-service \
+            --force-new-deployment
+
+      - name: Verify deployment
+        run: |
+          # Wait for deployment to complete
+          aws ecs wait services-stable \
+            --cluster off-the-grid-staging \
+            --services api-service frontend-service
+
+      - name: Run smoke tests
+        run: |
+          # Basic health checks
+          curl -f https://staging-api.offthegrid.io/health
+          curl -f https://staging.offthegrid.io/api/health
+
+  # Deploy to production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build, security-scan]
+    if: github.event_name == 'release'
+    environment:
+      name: production
+      url: https://offthegrid.io
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      - name: Create deployment
+        id: deployment
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const deployment = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+              environment: 'production',
+              auto_merge: false,
+              required_contexts: []
+            });
+            return deployment.data.id;
+
+      - name: Deploy to ECS Production
+        run: |
+          # Blue-green deployment strategy
+          aws ecs update-service \
+            --cluster off-the-grid-production \
+            --service api-service \
+            --force-new-deployment
+
+          aws ecs update-service \
+            --cluster off-the-grid-production \
+            --service frontend-service \
+            --force-new-deployment
+
+      - name: Verify production deployment
+        run: |
+          # Wait for deployment to complete
+          aws ecs wait services-stable \
+            --cluster off-the-grid-production \
+            --services api-service frontend-service
+
+      - name: Run production smoke tests
+        run: |
+          # Comprehensive health checks
+          curl -f https://api.offthegrid.io/health
+          curl -f https://offthegrid.io/api/health
+          
+          # Test critical endpoints
+          curl -f https://api.offthegrid.io/api/v1/grids
+          curl -f https://api.offthegrid.io/api/v1/tokens
+
+      - name: Update deployment status
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const state = '${{ job.status }}' === 'success' ? 'success' : 'failure';
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: '${{ steps.deployment.outputs.result }}',
+              state: state,
+              environment_url: 'https://offthegrid.io',
+              description: state === 'success' ? 'Deployment succeeded' : 'Deployment failed'
+            });
+
+      - name: Notify Slack on deployment
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+
+  # Database migrations
+  migrate-database:
+    name: Database Migrations
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production]
+    if: always() && (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        working-directory: database
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run migrations (staging)
+        if: needs.deploy-staging.result == 'success'
+        working-directory: database
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: |
+          python migrate.py
+
+      - name: Run migrations (production)
+        if: needs.deploy-production.result == 'success'
+        working-directory: database
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          python migrate.py --production
+
+  # Cleanup old images
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Delete old container images
+        uses: actions/delete-package-versions@v4
+        with:
+          package-name: '${{ env.IMAGE_NAME }}/api'
+          package-type: 'container'
+          min-versions-to-keep: 10
+          delete-only-untagged-versions: 'true'

@@ -1,18 +1,41 @@
-use ergo_lib::ergo_chain_types::Digest32;
+use ergo_lib::ergo_chain_types::{Digest32, Base16DecodedBytes};
 use off_the_grid::{
     boxes::tracked_box::TrackedBox,
     grid::multigrid_order::{MultiGridOrder, OrderState},
     node::client::NodeClient,
     units::{Price, TokenStore, UnitAmount, ERG_UNIT},
 };
+use serde::Serialize;
 
 use crate::scan_config::ScanConfig;
 use off_the_grid::units::Fraction;
+
+#[derive(Serialize)]
+struct GridSummary {
+    grid_identity: String,
+    token_id: String,
+    sell_orders: usize,
+    buy_orders: usize,
+    bid_price: String,
+    ask_price: String,
+    profit_erg: u64,
+    profit_token: String,
+    total_erg: u64,
+    total_tokens: String,
+}
+
+#[derive(Serialize)]
+struct GridOrderDetail {
+    order_type: String,
+    amount: String,
+    price: String,
+}
 
 pub async fn handle_grid_list(
     node_client: NodeClient,
     scan_config: ScanConfig,
     token_id: Option<String>,
+    json_output: bool,
 ) -> Result<(), anyhow::Error> {
     let token_id = token_id
         .map(|i| Digest32::try_from(i).map(|i| i.into()))
@@ -32,82 +55,146 @@ pub async fn handle_grid_list(
         .collect::<Vec<_>>();
 
     if grid_orders.is_empty() {
-        println!("No grid orders found");
+        if json_output {
+            println!("[]");
+        } else {
+            println!("No grid orders found");
+        }
         return Ok(());
     }
 
     let tokens = TokenStore::load(None)?;
 
-    let name_width = grid_orders
-        .iter()
-        .map(|o| o.value.metadata.as_ref().map(|m| m.len()).unwrap_or(0))
-        .max()
-        .unwrap_or(0);
-
-    for order in grid_orders {
-        let entries = &order.value.entries;
-
-        let num_buy_orders = entries
+    if json_output {
+        let grid_summaries: Vec<GridSummary> = grid_orders
             .iter()
-            .filter(|o| o.state == OrderState::Buy)
-            .count();
+            .map(|order| {
+                let entries = &order.value.entries;
 
-        let num_sell_orders = entries
+                let num_buy_orders = entries
+                    .iter()
+                    .filter(|o| o.state == OrderState::Buy)
+                    .count();
+
+                let num_sell_orders = entries
+                    .iter()
+                    .filter(|o| o.state == OrderState::Sell)
+                    .count();
+
+                let bid = entries.bid_entry().map(|o| o.bid()).unwrap_or_default();
+                let ask = entries.ask_entry().map(|o| o.ask()).unwrap_or_default();
+                let profit = order.value.profit();
+                let total_value = *order.value.value.as_u64();
+
+                let total_tokens = order
+                    .ergo_box
+                    .tokens
+                    .as_ref()
+                    .map(|t| *t.first().amount.as_u64())
+                    .unwrap_or(0);
+
+                let token_id = order.value.token_id;
+                let token_info = tokens.get_unit(&token_id);
+                let erg_info = *ERG_UNIT;
+
+                let total_value_unit = UnitAmount::new(erg_info, total_value);
+                let total_tokens_unit = UnitAmount::new(token_info, total_tokens);
+                let profit_unit = UnitAmount::new(erg_info, profit);
+
+                let to_price = |amount: Fraction| Price::new(token_info, erg_info, amount);
+                let bid_price = to_price(bid);
+                let ask_price = to_price(ask);
+                let profit_in_token = ask_price.convert_price(&profit_unit).unwrap();
+
+                let grid_identity = if let Some(grid_identity) = order.value.metadata.as_ref() {
+                    String::from_utf8(grid_identity.clone())
+                        .unwrap_or_else(|_| format!("{:?}", grid_identity))
+                } else {
+                    "No identity".to_string()
+                };
+
+                GridSummary {
+                    grid_identity,
+                    token_id: format!("{}", token_id),
+                    sell_orders: num_sell_orders,
+                    buy_orders: num_buy_orders,
+                    bid_price: bid_price.indirect().to_string(),
+                    ask_price: ask_price.indirect().to_string(),
+                    profit_erg: profit,
+                    profit_token: profit_in_token.to_string(),
+                    total_erg: total_value,
+                    total_tokens: total_tokens_unit.to_string(),
+                }
+            })
+            .collect();
+
+        println!("{}", serde_json::to_string_pretty(&grid_summaries)?);
+    } else {
+        let name_width = grid_orders
             .iter()
-            .filter(|o| o.state == OrderState::Sell)
-            .count();
-
-        let bid = entries.bid_entry().map(|o| o.bid()).unwrap_or_default();
-
-        let ask = entries.ask_entry().map(|o| o.ask()).unwrap_or_default();
-
-        let profit = order.value.profit();
-
-        let total_value = *order.value.value.as_u64();
-
-        let total_tokens = order
-            .ergo_box
-            .tokens
-            .as_ref()
-            .map(|t| *t.first().amount.as_u64())
+            .map(|o| o.value.metadata.as_ref().map(|m| m.len()).unwrap_or(0))
+            .max()
             .unwrap_or(0);
 
-        let token_id = order.value.token_id;
+        for order in grid_orders {
+            let entries = &order.value.entries;
 
-        let token_info = tokens.get_unit(&token_id);
-        let erg_info = *ERG_UNIT;
+            let num_buy_orders = entries
+                .iter()
+                .filter(|o| o.state == OrderState::Buy)
+                .count();
 
-        let total_value = UnitAmount::new(erg_info, total_value);
-        let total_tokens = UnitAmount::new(token_info, total_tokens);
+            let num_sell_orders = entries
+                .iter()
+                .filter(|o| o.state == OrderState::Sell)
+                .count();
 
-        let profit = UnitAmount::new(erg_info, profit);
+            let bid = entries.bid_entry().map(|o| o.bid()).unwrap_or_default();
+            let ask = entries.ask_entry().map(|o| o.ask()).unwrap_or_default();
+            let profit = order.value.profit();
+            let total_value = *order.value.value.as_u64();
 
-        let to_price = |amount: Fraction| Price::new(token_info, erg_info, amount);
+            let total_tokens = order
+                .ergo_box
+                .tokens
+                .as_ref()
+                .map(|t| *t.first().amount.as_u64())
+                .unwrap_or(0);
 
-        let bid = to_price(bid);
-        let ask = to_price(ask);
-        let profit_in_token = ask.convert_price(&profit).unwrap();
+            let token_id = order.value.token_id;
+            let token_info = tokens.get_unit(&token_id);
+            let erg_info = *ERG_UNIT;
 
-        let grid_identity = if let Some(grid_identity) = order.value.metadata.as_ref() {
-            String::from_utf8(grid_identity.clone())
-                .unwrap_or_else(|_| format!("{:?}", grid_identity))
-        } else {
-            "No identity".to_string()
-        };
+            let total_value_unit = UnitAmount::new(erg_info, total_value);
+            let total_tokens_unit = UnitAmount::new(token_info, total_tokens);
+            let profit_unit = UnitAmount::new(erg_info, profit);
 
-        println!(
-            "{: <9$} | {} Sell {} Buy, Bid {} Ask {}, Profit {} ({}), Total {} {}",
-            grid_identity,
-            num_sell_orders,
-            num_buy_orders,
-            bid.indirect(),
-            ask.indirect(),
-            profit,
-            profit_in_token,
-            total_value,
-            total_tokens,
-            name_width
-        );
+            let to_price = |amount: Fraction| Price::new(token_info, erg_info, amount);
+            let bid_price = to_price(bid);
+            let ask_price = to_price(ask);
+            let profit_in_token = ask_price.convert_price(&profit_unit).unwrap();
+
+            let grid_identity = if let Some(grid_identity) = order.value.metadata.as_ref() {
+                String::from_utf8(grid_identity.clone())
+                    .unwrap_or_else(|_| format!("{:?}", grid_identity))
+            } else {
+                "No identity".to_string()
+            };
+
+            println!(
+                "{: <9$} | {} Sell {} Buy, Bid {} Ask {}, Profit {} ({}), Total {} {}",
+                grid_identity,
+                num_sell_orders,
+                num_buy_orders,
+                bid_price.indirect(),
+                ask_price.indirect(),
+                profit_unit,
+                profit_in_token,
+                total_value_unit,
+                total_tokens_unit,
+                name_width
+            );
+        }
     }
 
     Ok(())
@@ -117,6 +204,7 @@ pub async fn handle_grid_details(
     node_client: NodeClient,
     scan_config: ScanConfig,
     grid_identity: String,
+    json_output: bool,
 ) -> Result<(), anyhow::Error> {
     let grid_identity = grid_identity.into_bytes();
 
@@ -136,43 +224,79 @@ pub async fn handle_grid_details(
     match grid_order {
         Some(grid_order) => {
             let tokens = TokenStore::load(None)?;
-
             let token_id = grid_order.value.token_id;
-
             let token_info = tokens.get_unit(&token_id);
             let erg_info = *ERG_UNIT;
 
-            for entry in grid_order.value.entries.iter() {
-                let bid = entry.bid();
-                let ask = entry.ask();
+            if json_output {
+                let order_details: Vec<GridOrderDetail> = grid_order
+                    .value
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        let bid = entry.bid();
+                        let ask = entry.ask();
 
-                let to_price = |amount: Fraction| Price::new(token_info, erg_info, amount);
+                        let to_price = |amount: Fraction| Price::new(token_info, erg_info, amount);
 
-                let price = match entry.state {
-                    OrderState::Buy => bid,
-                    OrderState::Sell => ask,
-                };
+                        let price = match entry.state {
+                            OrderState::Buy => bid,
+                            OrderState::Sell => ask,
+                        };
 
-                let price = to_price(price);
+                        let price = to_price(price);
+                        let amount = UnitAmount::new(token_info, *entry.token_amount.as_u64());
 
-                let amount = UnitAmount::new(token_info, *entry.token_amount.as_u64());
+                        let state_str = match entry.state {
+                            OrderState::Buy => "Buy",
+                            OrderState::Sell => "Sell",
+                        };
 
-                let state_str = match entry.state {
-                    OrderState::Buy => "Buy",
-                    OrderState::Sell => "Sell",
-                };
+                        GridOrderDetail {
+                            order_type: state_str.to_string(),
+                            amount: amount.to_string(),
+                            price: price.indirect().to_string(),
+                        }
+                    })
+                    .collect();
 
-                println!(
-                    "{:>4} {:>8} @ {:>15}",
-                    state_str,
-                    amount.to_string(),
-                    price.indirect().to_string(),
-                );
+                println!("{}", serde_json::to_string_pretty(&order_details)?);
+            } else {
+                for entry in grid_order.value.entries.iter() {
+                    let bid = entry.bid();
+                    let ask = entry.ask();
+
+                    let to_price = |amount: Fraction| Price::new(token_info, erg_info, amount);
+
+                    let price = match entry.state {
+                        OrderState::Buy => bid,
+                        OrderState::Sell => ask,
+                    };
+
+                    let price = to_price(price);
+                    let amount = UnitAmount::new(token_info, *entry.token_amount.as_u64());
+
+                    let state_str = match entry.state {
+                        OrderState::Buy => "Buy",
+                        OrderState::Sell => "Sell",
+                    };
+
+                    println!(
+                        "{:>4} {:>8} @ {:>15}",
+                        state_str,
+                        amount.to_string(),
+                        price.indirect().to_string(),
+                    );
+                }
             }
             Ok(())
         }
         None => {
-            println!("No grid order found");
+            if json_output {
+                println!("{{\"error\": \"No grid order found\"}}");
+            } else {
+                println!("No grid order found");
+            }
             Ok(())
         }
     }
